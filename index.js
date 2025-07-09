@@ -23,7 +23,21 @@ const endpointStatus = AVALANCHE_RPC_ENDPOINTS.map(() => ({
 }));
 
 // Middleware để parse JSON body
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: "50mb" }));
+app.use(bodyParser.urlencoded({ extended: true, limit: "50mb" }));
+
+// Middleware để log request body
+app.use((req, res, next) => {
+  const timestamp = new Date().toISOString();
+  const method = req.method;
+  const url = req.originalUrl;
+  const ip = req.ip || req.headers["x-forwarded-for"] || "unknown";
+
+  // Log ra console
+  console.log(`[${timestamp}] ${method} ${url} from ${ip}`);
+
+  next();
+});
 
 // Hàm để kiểm tra nếu response cho thấy đã vượt quá giới hạn request
 function isRateLimitExceeded(error) {
@@ -78,10 +92,12 @@ function markCurrentEndpointUnavailable() {
   );
 }
 
-// Middleware xử lý chính
-app.post("/rpc", async (req, res) => {
+// Hàm xử lý request đến RPC endpoint
+async function handleRpcRequest(req, res) {
   let retries = 0;
   const MAX_RETRIES = AVALANCHE_RPC_ENDPOINTS.length;
+
+  console.log(`BODY==== ${JSON.stringify(req.body)}`);
 
   while (retries < MAX_RETRIES) {
     const currentEndpoint = getNextAvailableEndpoint();
@@ -97,10 +113,16 @@ app.post("/rpc", async (req, res) => {
         },
       });
 
+      // Log response
+      console.log(
+        `Response from ${currentEndpoint}: Status ${response.status}`
+      );
+
       // Gửi response về client
       return res.status(response.status).json(response.data);
     } catch (error) {
       if (isRateLimitExceeded(error)) {
+        console.log(`Rate limit exceeded for endpoint ${currentEndpointIndex}`);
         markCurrentEndpointUnavailable();
         retries++;
         continue; // Thử endpoint tiếp theo
@@ -133,6 +155,11 @@ app.post("/rpc", async (req, res) => {
       code: -32603,
     },
   });
+}
+
+// Middleware xử lý RPC endpoint cụ thể
+app.post("/rpc", async (req, res) => {
+  return handleRpcRequest(req, res);
 });
 
 // Health check endpoint
@@ -145,10 +172,23 @@ app.get("/health", (req, res) => {
     availableEndpoints,
     totalEndpoints: AVALANCHE_RPC_ENDPOINTS.length,
     currentEndpoint: currentEndpointIndex,
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+  });
+});
+// Thay thế app.all("*", ...) bằng cách dùng wildcard đúng cú pháp
+// Middleware cuối cùng để xử lý các request không khớp
+app.use((req, res) => {
+  res.status(405).json({
+    error: {
+      message: "Method not allowed. Use POST for RPC requests.",
+      code: -32600,
+    },
   });
 });
 
 // Khởi động server
 app.listen(PORT, () => {
   console.log(`Avalanche RPC middleware running on port ${PORT}`);
+  console.log(`Available endpoints: ${AVALANCHE_RPC_ENDPOINTS.length}`);
 });
